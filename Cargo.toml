@@ -1,0 +1,17 @@
+[package]
+name = "tomorrows"
+version = "0.1.0"
+authors = ["tiso <p9648213750912@gmail.com>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+dioxus = { version = "0.7.1", features = ["fullstack"] }
+
+[features]
+default = ["web"]
+web = ["dioxus/web"]
+desktop = ["dioxus/desktop"]
+mobile = ["dioxus/mobile"]
+server = ["dioxus/server"]
