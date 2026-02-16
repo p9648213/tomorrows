@@ -1,20 +1,21 @@
-use dioxus::prelude::*;
-
-const MAIN_CSS: Asset = asset!("/assets/main.css");
-const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
-const FAVICON: Asset = asset!("/assets/favicon.ico");
+mod core;
+mod interface;
 
 fn main() {
-    dioxus::launch(App);
-}
+    #[cfg(feature = "server")]
+    dioxus::serve(|| async move {
+        use crate::core::{database, file_system::FileSystem};
+        use dioxus::server::axum::Extension;
 
-#[component]
-fn App() -> Element {
-    rsx! {
-        document::Link { rel: "icon", href: FAVICON }
-        document::Link { rel: "stylesheet", href: MAIN_CSS }
-        document::Link { rel: "stylesheet", href: TAILWIND_CSS }
+        database::init();
 
-        div { "Hello World 2" }
-    }
+        let file_system = FileSystem::new();
+
+        let router = dioxus::server::router(interface::application::Application).layer(Extension(file_system));
+
+        Ok(router)
+    });
+
+    #[cfg(not(feature = "server"))]
+    dioxus::launch(interface::application::Application);
 }

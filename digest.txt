@@ -1,0 +1,365 @@
+Directory structure:
+└── src/
+    ├── main.rs
+    ├── core/
+    │   ├── api.rs
+    │   ├── constant.rs
+    │   ├── database.rs
+    │   ├── entity.rs
+    │   ├── file_system.rs
+    │   └── mod.rs
+    └── interface/
+        ├── application.rs
+        ├── mod.rs
+        └── screen.rs
+
+================================================
+FILE: main.rs
+================================================
+mod core;
+mod interface;
+
+fn main() {
+    #[cfg(feature = "server")]
+    dioxus::serve(|| async move {
+        use crate::core::{database, file_system::FileSystem};
+        use dioxus::server::axum::Extension;
+
+        database::init();
+
+        let file_system = FileSystem::new();
+
+        let router = dioxus::server::router(interface::application::Application).layer(Extension(file_system));
+
+        Ok(router)
+    });
+
+    #[cfg(not(feature = "server"))]
+    dioxus::launch(interface::application::Application);
+}
+
+
+
+================================================
+FILE: core/api.rs
+================================================
+use crate::core::{constant::DESKTOP_ID, entity::FileNode};
+use dioxus::prelude::*;
+
+#[server]
+pub async fn get_desktop_files() -> Result<Vec<FileNode>, ServerFnError> {
+    use crate::core::file_system::FileSystem;
+    use dioxus::fullstack::FullstackContext;
+    use dioxus::server::axum::Extension;
+
+    let fs: Extension<FileSystem> = FullstackContext::extract().await?;
+    let files = fs.get_children(DESKTOP_ID);
+
+    Ok(files)
+}
+
+
+
+================================================
+FILE: core/constant.rs
+================================================
+pub const DESKTOP_ID: &str = "aa40e6cc-aa5e-406f-897e-f8c5c6b06884";
+
+
+
+================================================
+FILE: core/database.rs
+================================================
+use dioxus::logger::tracing;
+use r2d2::Pool;
+use r2d2_sqlite::{rusqlite::params, SqliteConnectionManager};
+use std::{fs, path::Path, sync::LazyLock};
+
+use crate::core::constant::DESKTOP_ID;
+
+pub type DbPool = Pool<SqliteConnectionManager>;
+
+pub static DATABASE: LazyLock<DbPool> = LazyLock::new(|| {
+    let db_path = "database/sqlite.db";
+
+    if let Some(parent) = Path::new(db_path).parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent).expect("Failed to create database directory");
+            tracing::info!("📁 Created database directory");
+        }
+    }
+
+    let manager = SqliteConnectionManager::file(db_path)
+        .with_init(|c| c.execute_batch("PRAGMA journal_mode=WAL;"));
+
+    Pool::new(manager).expect("Failed to create pool")
+});
+
+pub fn init() {
+    let connection = DATABASE.get().unwrap();
+
+    connection
+        .execute(
+            "CREATE TABLE IF NOT EXISTS file_system (
+            id INTEGER PRIMARY KEY,
+            parent_id TEXT,
+            name TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            path TEXT UNIQUE NOT NULL,
+            extension TEXT,
+            content_hash TEXT
+        )",
+            [],
+        )
+        .unwrap();
+
+    // Seed Desktop if missing
+    let exists = connection
+        .query_row(
+            "SELECT 1 FROM file_system WHERE path = ?1",
+            params!["/desktop"],
+            |_| Ok(()),
+        )
+        .is_ok();
+
+    if !exists {
+        connection
+            .execute(
+                "INSERT INTO file_system (id, name, kind, path) VALUES (?1, ?2, ?3)",
+                params![DESKTOP_ID, "Desktop", "folder", "/desktop"],
+            )
+            .expect("Failed to create Desktop folder");
+        tracing::info!("📁 Created default 'Desktop' folder");
+    }
+
+    tracing::info!("✅ Database initialized");
+}
+
+
+
+================================================
+FILE: core/entity.rs
+================================================
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileNode {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub name: String,
+    pub kind: String,
+    pub path: String,
+    pub extension: Option<String>,
+    pub content_hash: Option<String>,
+    pub children: Vec<String>,
+}
+
+
+
+================================================
+FILE: core/file_system.rs
+================================================
+use super::database::DATABASE;
+use crate::core::entity::FileNode;
+use dashmap::DashMap;
+use dioxus::logger::tracing;
+use r2d2_sqlite::rusqlite::params;
+use std::sync::Arc;
+
+#[derive(Clone)]
+pub struct FileSystem {
+    pub nodes: Arc<DashMap<String, FileNode>>,
+}
+
+impl FileSystem {
+    pub fn new() -> Self {
+        let fs = Self {
+            nodes: Arc::new(DashMap::new()),
+        };
+        fs.hydrate();
+        tracing::info!("✅ File system loaded into memory");
+        fs
+    }
+
+    pub fn hydrate(&self) {
+        let connection = DATABASE.get().unwrap();
+        let mut statement = connection
+            .prepare(
+                "SELECT id, parent_id, name, kind, path, extension, content_hash FROM file_system",
+            )
+            .unwrap();
+
+        let file_nodes = statement
+            .query_map([], |row| {
+                Ok(FileNode {
+                    id: row.get(0)?,
+                    parent_id: row.get(1)?,
+                    name: row.get(2)?,
+                    kind: row.get(3)?,
+                    path: row.get(4)?,
+                    extension: row.get(4)?,
+                    content_hash: row.get(5)?,
+                    children: Vec::new(),
+                })
+            })
+            .unwrap();
+
+        for node in file_nodes {
+            let node = node.unwrap();
+            self.nodes.insert(node.id.clone(), node);
+        }
+
+        let all_nodes: Vec<(String, Option<String>)> = self
+            .nodes
+            .iter()
+            .map(|r| (r.key().clone(), r.value().parent_id.clone()))
+            .collect();
+
+        for (child_id, parent_id_opt) in all_nodes {
+            if let Some(parent_id) = parent_id_opt {
+                if let Some(mut parent) = self.nodes.get_mut(&parent_id) {
+                    parent.children.push(child_id);
+                }
+            }
+        }
+    }
+
+    pub fn get_children(&self, parent_id: &str) -> Vec<FileNode> {
+        if let Some(parent) = self.nodes.get(parent_id) {
+            parent
+                .children
+                .iter()
+                .filter_map(|child_id| self.nodes.get(child_id).map(|n| n.value().clone()))
+                .collect()
+        } else {
+            vec![]
+        }
+    }
+
+    pub fn create_folder(&mut self, parent_id: &str, name: &str) -> Result<FileNode, String> {
+        let parent_path = self
+            .nodes
+            .get(parent_id)
+            .map(|n| n.path.clone())
+            .ok_or_else(|| "Parent folder not found".to_string())?;
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = format!("{}/{}", parent_path, name);
+
+        let connection = DATABASE.get().unwrap();
+
+        connection
+            .execute(
+                "INSERT INTO file_system (id, name, kind, path) VALUES (?1, ?2, ?3, ?4)",
+                params![id, name, "folder", path],
+            )
+            .map_err(|e| format!("Database error: {}", e))?;
+
+        let file_node = FileNode {
+            id: id.clone(),
+            parent_id: Some(parent_id.to_string()),
+            name: name.to_string(),
+            kind: "folder".to_string(),
+            path,
+            content_hash: None,
+            extension: None,
+            children: vec![],
+        };
+
+        self.nodes.insert(id.clone(), file_node.clone());
+
+        if let Some(mut parent) = self.nodes.get_mut(parent_id) {
+            parent.children.push(id);
+        }
+
+        Ok(file_node)
+    }
+}
+
+
+
+================================================
+FILE: core/mod.rs
+================================================
+pub mod api;
+#[cfg(feature = "server")]
+pub mod database;
+pub mod entity;
+#[cfg(feature = "server")]
+pub mod file_system;
+#[cfg(feature = "server")]
+pub mod constant;
+
+
+
+================================================
+FILE: interface/application.rs
+================================================
+use dioxus::prelude::*;
+use super::screen::Screen;
+
+const MAIN_CSS: Asset = asset!("/assets/main.css");
+const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
+const FAVICON: Asset = asset!("/assets/favicon.ico");
+
+#[component]
+pub fn Application() -> Element {
+    rsx! {
+        document::Link { rel: "icon", href: FAVICON }
+        document::Link { rel: "stylesheet", href: MAIN_CSS }
+        document::Link { rel: "stylesheet", href: TAILWIND_CSS }
+
+        Screen {}
+    }
+}
+
+
+
+================================================
+FILE: interface/mod.rs
+================================================
+pub mod application;
+pub mod screen;
+
+
+
+================================================
+FILE: interface/screen.rs
+================================================
+use crate::core::{api::get_desktop_files, entity::FileNode};
+use dioxus::prelude::*;
+
+#[component]
+pub fn Screen() -> Element {
+    let files_resource = use_resource(get_desktop_files);
+
+    rsx! {
+        div { class: "w-full h-screen bg-slate-900 text-white p-4",
+            match &*files_resource.read_unchecked() {
+                Some(Ok(nodes)) => rsx! {
+                    div { class: "grid grid-cols-4 gap-4",
+                        for node in nodes {
+                            FileIcon { node: node.clone() }
+                        }
+                    }
+                },
+                Some(Err(e)) => rsx! { div { class: "text-red-500", "System Error: {e}" } },
+                None => rsx! { div { "Booting..." } }
+            }
+        }
+    }
+}
+
+#[component]
+fn FileIcon(node: FileNode) -> Element {
+    rsx! {
+        div { class: "flex flex-col items-center p-2 hover:bg-white/10 rounded cursor-pointer transition",
+            div { class: "text-4xl mb-2",
+                if node.kind == "folder" { "📁" } else { "📄" }
+            }
+            span { class: "text-sm text-center select-none", "{node.name}" }
+        }
+    }
+}
+
+
