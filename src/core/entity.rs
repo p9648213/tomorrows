@@ -10,4 +10,6 @@ pub struct FileNode {
     pub extension: Option<String>,
     pub content_hash: Option<String>,
     pub children: Vec<String>,
+    pub x: i32,
+    pub y: i32,
 }

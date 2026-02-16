@@ -24,7 +24,7 @@ impl FileSystem {
         let connection = DATABASE.get().unwrap();
         let mut statement = connection
             .prepare(
-                "SELECT id, parent_id, name, kind, path, extension, content_hash FROM file_system",
+                "SELECT id, parent_id, name, kind, path, extension, content_hash, x, y FROM file_system",
             )
             .unwrap();
 
@@ -38,6 +38,8 @@ impl FileSystem {
                     path: row.get(4)?,
                     extension: row.get(4)?,
                     content_hash: row.get(5)?,
+                    x: row.get(7)?,
+                    y: row.get(8)?,
                     children: Vec::new(),
                 })
             })
@@ -75,33 +77,62 @@ impl FileSystem {
         }
     }
 
-    pub fn create_folder(&mut self, parent_id: &str, name: &str) -> Result<FileNode, String> {
+    pub fn create_folder(
+        &mut self,
+        parent_id: &str,
+        base_name: &str,
+        x: i32,
+        y: i32,
+    ) -> Result<FileNode, String> {
         let parent_path = self
             .nodes
             .get(parent_id)
             .map(|n| n.path.clone())
             .ok_or_else(|| "Parent folder not found".to_string())?;
 
-        let id = uuid::Uuid::new_v4().to_string();
-        let path = format!("{}/{}", parent_path, name);
-
         let connection = DATABASE.get().unwrap();
 
+        let mut final_name = base_name.to_string();
+        let mut final_path = format!("{}/{}", parent_path, final_name);
+        let mut counter = 1;
+
+        loop {
+            let exists: bool = connection
+                .query_row(
+                    "SELECT 1 FROM file_system WHERE path = ?1",
+                    params![final_path],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+
+            if !exists {
+                break;
+            }
+
+            counter += 1;
+            final_name = format!("{} ({})", base_name, counter);
+            final_path = format!("{}/{}", parent_path, final_name);
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+
         connection
-            .execute(
-                "INSERT INTO file_system (id, name, kind, path) VALUES (?1, ?2, ?3, ?4)",
-                params![id, name, "folder", path],
-            )
-            .map_err(|e| format!("Database error: {}", e))?;
+                .execute(
+                    "INSERT INTO file_system (id, parent_id, name, kind, path, x, y) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![id, parent_id, final_name, "folder", final_path, x, y],
+                )
+                .map_err(|e| format!("Database error: {}", e))?;
 
         let file_node = FileNode {
             id: id.clone(),
             parent_id: Some(parent_id.to_string()),
-            name: name.to_string(),
+            name: final_name, // Use the resolved name
             kind: "folder".to_string(),
-            path,
+            path: final_path,
             content_hash: None,
             extension: None,
+            x,
+            y,
             children: vec![],
         };
 
@@ -112,5 +143,23 @@ impl FileSystem {
         }
 
         Ok(file_node)
+    }
+
+    pub fn update_position(&self, id: &str, x: i32, y: i32) -> Result<(), String> {
+        let connection = DATABASE.get().unwrap();
+
+        connection
+            .execute(
+                "UPDATE file_system SET x = ?1, y = ?2 WHERE id = ?3",
+                params![x, y, id],
+            )
+            .map_err(|e| e.to_string())?;
+
+        if let Some(mut node) = self.nodes.get_mut(id) {
+            node.x = x;
+            node.y = y;
+        }
+
+        Ok(())
     }
 }

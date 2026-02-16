@@ -1,35 +1,161 @@
-use crate::core::{api::get_desktop_files, entity::FileNode};
+use crate::core::{api::{get_desktop_files, move_file, create_new_folder}, entity::FileNode};
 use dioxus::prelude::*;
+
+const GRID_SIZE: i32 = 96;
+
+#[derive(Clone, Copy, Debug)]
+struct ContextMenuState {
+    x: i32,
+    y: i32,
+    visible: bool,
+}
 
 #[component]
 pub fn Screen() -> Element {
-    let files_resource = use_resource(get_desktop_files);
+    let mut files = use_signal(Vec::<FileNode>::new);
+    let mut dragging_id = use_signal(|| Option::<String>::None);
+    let mut drag_offset = use_signal(|| (0, 0));
+
+    let mut context_menu = use_signal(|| ContextMenuState { x: 0, y: 0, visible: false });
+
+    use_resource(move || async move {
+        if let Ok(data) = get_desktop_files().await {
+            files.set(data);
+        }
+    });
+
+    let snap_to_grid = |raw_x: i32, raw_y: i32| -> (i32, i32) {
+        let col = (raw_x as f32 / GRID_SIZE as f32).round() as i32;
+        let row = (raw_y as f32 / GRID_SIZE as f32).round() as i32;
+        (col * GRID_SIZE, row * GRID_SIZE)
+    };
+
+    let handle_mouse_move = move |evt: MouseEvent| {
+        if let Some(id) = dragging_id() {
+            let mut current_files = files();
+            if let Some(idx) = current_files.iter().position(|f| f.id == id) {
+                let (off_x, off_y) = drag_offset();
+                current_files[idx].x = evt.client_coordinates().x as i32 - off_x;
+                current_files[idx].y = evt.client_coordinates().y as i32 - off_y;
+                files.set(current_files);
+            }
+        }
+    };
+
+    let handle_mouse_up = move |_| {
+        if let Some(id) = dragging_id() {
+            let mut current_files = files();
+            if let Some(idx) = current_files.iter().position(|f| f.id == id) {
+                let raw_x = current_files[idx].x;
+                let raw_y = current_files[idx].y;
+                let (final_x, final_y) = snap_to_grid(raw_x, raw_y);
+
+                current_files[idx].x = final_x;
+                current_files[idx].y = final_y;
+
+                let id_clone = id.clone();
+
+                spawn(async move {
+                    let _ = move_file(id_clone, final_x, final_y).await;
+                });
+            }
+            files.set(current_files);
+            dragging_id.set(None);
+        }
+    };
+
+    let handle_context_menu = move |evt: MouseEvent| {
+        evt.prevent_default();
+        context_menu.set(ContextMenuState {
+            x: evt.client_coordinates().x as i32,
+            y: evt.client_coordinates().y as i32,
+            visible: true,
+        });
+    };
+
+    let handle_background_click = move |_| {
+        if context_menu().visible {
+            context_menu.set(ContextMenuState { x: 0, y: 0, visible: false });
+        }
+    };
+
+    let mut create_folder_action = move || {
+        let state = context_menu();
+        context_menu.set(ContextMenuState { x: 0, y: 0, visible: false });
+
+        let (x, y) = snap_to_grid(state.x, state.y);
+
+        spawn(async move {
+            if let Ok(new_node) = create_new_folder("New Folder".to_string(), x, y).await {
+                files.with_mut(|f| f.push(new_node));
+            }
+        });
+    };
+
+    let mut sort_files_action = move || {
+        // TODO - SORTING
+    };
 
     rsx! {
-        div { class: "w-full h-screen bg-slate-900 text-white p-4",
-            match &*files_resource.read_unchecked() {
-                Some(Ok(nodes)) => rsx! {
-                    div { class: "grid grid-cols-4 gap-4",
-                        for node in nodes {
-                            FileIcon { node: node.clone() }
-                        }
+        div {
+            class: "w-full h-screen bg-slate-900 text-white relative overflow-hidden",
+            onmousemove: handle_mouse_move,
+            onmouseup: handle_mouse_up,
+            oncontextmenu: handle_context_menu,
+            onclick: handle_background_click,
+
+            for node in files() {
+                FileIcon {
+                    key: "{node.id}",
+                    node: node.clone(),
+                    on_drag_start: move |evt: MouseEvent| {
+                        let rect_x = node.x;
+                        let rect_y = node.y;
+                        let mouse_x = evt.client_coordinates().x as i32;
+                        let mouse_y = evt.client_coordinates().y as i32;
+
+                        drag_offset.set((mouse_x - rect_x, mouse_y - rect_y));
+                        dragging_id.set(Some(node.id.clone()));
                     }
-                },
-                Some(Err(e)) => rsx! { div { class: "text-red-500", "System Error: {e}" } },
-                None => rsx! { div { "Booting..." } }
+                }
+            }
+
+            if context_menu().visible {
+                div {
+                    class: "absolute bg-slate-800 border border-slate-600 shadow-lg rounded py-1 z-50 w-40 flex flex-col",
+                    style: "left: {context_menu().x}px; top: {context_menu().y}px;",
+
+                    button {
+                        class: "px-4 py-2 hover:bg-slate-700 text-left text-sm",
+                        onclick: move |e| { e.stop_propagation(); create_folder_action(); },
+                        "New Folder"
+                    }
+                    button {
+                        class: "px-4 py-2 hover:bg-slate-700 text-left text-sm",
+                        onclick: move |e| { e.stop_propagation(); sort_files_action(); },
+                        "Sort by Name"
+                    }
+                }
             }
         }
     }
 }
 
 #[component]
-fn FileIcon(node: FileNode) -> Element {
+fn FileIcon(node: FileNode, on_drag_start: EventHandler<MouseEvent>) -> Element {
     rsx! {
-        div { class: "flex flex-col items-center p-2 hover:bg-white/10 rounded cursor-pointer transition",
-            div { class: "text-4xl mb-2",
+        div {
+            class: "absolute flex flex-col items-center justify-center cursor-pointer select-none p-1 hover:bg-white/10 rounded active:bg-white/20",
+            style: "left: {node.x}px; top: {node.y}px; width: {GRID_SIZE}px; height: {GRID_SIZE}px;",
+            onmousedown: move |e| on_drag_start.call(e),
+
+            div { class: "text-4xl mb-1 pointer-events-none",
                 if node.kind == "folder" { "📁" } else { "📄" }
             }
-            span { class: "text-sm text-center select-none", "{node.name}" }
+            span {
+                class: "text-xs text-center leading-tight overflow-hidden text-ellipsis w-full px-1 pointer-events-none drop-shadow-md",
+                "{node.name}"
+            }
         }
     }
 }

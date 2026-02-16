@@ -29,13 +29,15 @@ pub fn init() {
     connection
         .execute(
             "CREATE TABLE IF NOT EXISTS file_system (
-            id INTEGER PRIMARY KEY,
+            id TEXT PRIMARY KEY,
             parent_id TEXT,
             name TEXT NOT NULL,
             kind TEXT NOT NULL,
             path TEXT UNIQUE NOT NULL,
             extension TEXT,
-            content_hash TEXT
+            content_hash TEXT,
+            x INTEGER DEFAULT 0,
+            y INTEGER DEFAULT 0
         )",
             [],
         )
@@ -53,7 +55,7 @@ pub fn init() {
     if !exists {
         connection
             .execute(
-                "INSERT INTO file_system (id, name, kind, path) VALUES (?1, ?2, ?3)",
+                "INSERT INTO file_system (id, name, kind, path) VALUES (?1, ?2, ?3, ?4)",
                 params![DESKTOP_ID, "Desktop", "folder", "/desktop"],
             )
             .expect("Failed to create Desktop folder");
