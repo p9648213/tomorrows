@@ -43,7 +43,6 @@ pub fn init() {
         )
         .unwrap();
 
-    // Seed Desktop if missing
     let exists = connection
         .query_row(
             "SELECT 1 FROM file_system WHERE path = ?1",

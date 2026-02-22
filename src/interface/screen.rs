@@ -1,4 +1,10 @@
-use crate::core::{api::{get_desktop_files, move_file, create_new_folder}, entity::FileNode};
+use crate::{
+    core::{
+        api::{create_new_folder, get_desktop_files, move_file},
+        entity::FileNode,
+    },
+    interface::icon::{FileIconFilled, FolderIconFilled},
+};
 use dioxus::prelude::*;
 
 const GRID_SIZE: i32 = 96;
@@ -16,7 +22,11 @@ pub fn Screen() -> Element {
     let mut dragging_id = use_signal(|| Option::<String>::None);
     let mut drag_offset = use_signal(|| (0, 0));
 
-    let mut context_menu = use_signal(|| ContextMenuState { x: 0, y: 0, visible: false });
+    let mut context_menu = use_signal(|| ContextMenuState {
+        x: 0,
+        y: 0,
+        visible: false,
+    });
 
     use_resource(move || async move {
         if let Ok(data) = get_desktop_files().await {
@@ -75,13 +85,21 @@ pub fn Screen() -> Element {
 
     let handle_background_click = move |_| {
         if context_menu().visible {
-            context_menu.set(ContextMenuState { x: 0, y: 0, visible: false });
+            context_menu.set(ContextMenuState {
+                x: 0,
+                y: 0,
+                visible: false,
+            });
         }
     };
 
     let mut create_folder_action = move || {
         let state = context_menu();
-        context_menu.set(ContextMenuState { x: 0, y: 0, visible: false });
+        context_menu.set(ContextMenuState {
+            x: 0,
+            y: 0,
+            visible: false,
+        });
 
         let (x, y) = snap_to_grid(state.x, state.y);
 
@@ -90,10 +108,6 @@ pub fn Screen() -> Element {
                 files.with_mut(|f| f.push(new_node));
             }
         });
-    };
-
-    let mut sort_files_action = move || {
-        // TODO - SORTING
     };
 
     rsx! {
@@ -130,11 +144,6 @@ pub fn Screen() -> Element {
                         onclick: move |e| { e.stop_propagation(); create_folder_action(); },
                         "New Folder"
                     }
-                    button {
-                        class: "px-4 py-2 hover:bg-slate-700 text-left text-sm",
-                        onclick: move |e| { e.stop_propagation(); sort_files_action(); },
-                        "Sort by Name"
-                    }
                 }
             }
         }
@@ -145,15 +154,18 @@ pub fn Screen() -> Element {
 fn FileIcon(node: FileNode, on_drag_start: EventHandler<MouseEvent>) -> Element {
     rsx! {
         div {
-            class: "absolute flex flex-col items-center justify-center cursor-pointer select-none p-1 hover:bg-white/10 rounded active:bg-white/20",
+            class: "absolute flex flex-col gap-1.5 items-center justify-center cursor-pointer select-none p-1 hover:bg-white/10 rounded active:bg-white/20",
             style: "left: {node.x}px; top: {node.y}px; width: {GRID_SIZE}px; height: {GRID_SIZE}px;",
             onmousedown: move |e| on_drag_start.call(e),
 
-            div { class: "text-4xl mb-1 pointer-events-none",
-                if node.kind == "folder" { "📁" } else { "📄" }
+            if node.kind == "folder" {
+                FolderIconFilled { size: 40 }
+            } else {
+                FileIconFilled { size: 40 }
             }
+
             span {
-                class: "text-xs text-center leading-tight overflow-hidden text-ellipsis w-full px-1 pointer-events-none drop-shadow-md",
+                class: "text-xs text-center leading-tight text-ellipsis line-clamp-2 w-full px-1 drop-shadow-md",
                 "{node.name}"
             }
         }
