@@ -1,6 +1,6 @@
 use crate::{
     core::{
-        api::{create_new_folder, get_desktop_files, move_file},
+        api::{create_new_folder, delete_node, get_desktop_files, move_file},
         entity::FileNode,
     },
     interface::icon::{FileIconFilled, FolderIconFilled},
@@ -9,11 +9,12 @@ use dioxus::prelude::*;
 
 const GRID_SIZE: i32 = 96;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct ContextMenuState {
     x: i32,
     y: i32,
     visible: bool,
+    target_id: Option<String>,
 }
 
 #[component]
@@ -26,6 +27,7 @@ pub fn Screen() -> Element {
         x: 0,
         y: 0,
         visible: false,
+        target_id: None,
     });
 
     use_resource(move || async move {
@@ -80,6 +82,7 @@ pub fn Screen() -> Element {
             x: evt.client_coordinates().x as i32,
             y: evt.client_coordinates().y as i32,
             visible: true,
+            target_id: None,
         });
     };
 
@@ -89,6 +92,7 @@ pub fn Screen() -> Element {
                 x: 0,
                 y: 0,
                 visible: false,
+                target_id: None,
             });
         }
     };
@@ -99,6 +103,7 @@ pub fn Screen() -> Element {
             x: 0,
             y: 0,
             visible: false,
+            target_id: None,
         });
 
         let (x, y) = snap_to_grid(state.x, state.y);
@@ -106,6 +111,21 @@ pub fn Screen() -> Element {
         spawn(async move {
             if let Ok(new_node) = create_new_folder("New Folder".to_string(), x, y).await {
                 files.with_mut(|f| f.push(new_node));
+            }
+        });
+    };
+
+    let mut delete_action = move |id: String| {
+        context_menu.set(ContextMenuState {
+            x: 0,
+            y: 0,
+            visible: false,
+            target_id: None,
+        });
+
+        spawn(async move {
+            if delete_node(id.clone()).await.is_ok() {
+                files.with_mut(|f| f.retain(|node| node.id != id));
             }
         });
     };
@@ -122,14 +142,29 @@ pub fn Screen() -> Element {
                 FileIcon {
                     key: "{node.id}",
                     node: node.clone(),
-                    on_drag_start: move |evt: MouseEvent| {
+                    on_drag_start: {
+                        let drag_id = node.id.clone();
                         let rect_x = node.x;
                         let rect_y = node.y;
-                        let mouse_x = evt.client_coordinates().x as i32;
-                        let mouse_y = evt.client_coordinates().y as i32;
 
-                        drag_offset.set((mouse_x - rect_x, mouse_y - rect_y));
-                        dragging_id.set(Some(node.id.clone()));
+                        move |evt: MouseEvent| {
+                            let mouse_x = evt.client_coordinates().x as i32;
+                            let mouse_y = evt.client_coordinates().y as i32;
+
+                            drag_offset.set((mouse_x - rect_x, mouse_y - rect_y));
+                            dragging_id.set(Some(drag_id.clone()));
+                        }
+                    },
+                    on_context_menu: move |evt: MouseEvent| {
+                        evt.prevent_default();
+                        evt.stop_propagation();
+
+                        context_menu.set(ContextMenuState {
+                            x: evt.client_coordinates().x as i32,
+                            y: evt.client_coordinates().y as i32,
+                            visible: true,
+                            target_id: Some(node.id.clone()),
+                        });
                     }
                 }
             }
@@ -139,10 +174,18 @@ pub fn Screen() -> Element {
                     class: "absolute bg-slate-800 border border-slate-600 shadow-lg rounded py-1 z-50 w-40 flex flex-col",
                     style: "left: {context_menu().x}px; top: {context_menu().y}px;",
 
-                    button {
-                        class: "px-4 py-2 hover:bg-slate-700 text-left text-sm",
-                        onclick: move |e| { e.stop_propagation(); create_folder_action(); },
-                        "New Folder"
+                    if let Some(target_id) = context_menu().target_id.clone() {
+                        button {
+                            class: "px-4 py-2 hover:bg-slate-700 text-left text-sm",
+                            onclick: move |e| { e.stop_propagation(); delete_action(target_id.clone()); },
+                            "Delete"
+                        }
+                    } else {
+                        button {
+                            class: "px-4 py-2 hover:bg-slate-700 text-left text-sm",
+                            onclick: move |e| { e.stop_propagation(); create_folder_action(); },
+                            "New Folder"
+                        }
                     }
                 }
             }
@@ -151,12 +194,17 @@ pub fn Screen() -> Element {
 }
 
 #[component]
-fn FileIcon(node: FileNode, on_drag_start: EventHandler<MouseEvent>) -> Element {
+fn FileIcon(
+    node: FileNode,
+    on_drag_start: EventHandler<MouseEvent>,
+    on_context_menu: EventHandler<MouseEvent>,
+) -> Element {
     rsx! {
         div {
             class: "absolute flex flex-col gap-1.5 items-center justify-center cursor-pointer select-none p-1 hover:bg-white/10 rounded active:bg-white/20",
             style: "left: {node.x}px; top: {node.y}px; width: {GRID_SIZE}px; height: {GRID_SIZE}px;",
             onmousedown: move |e| on_drag_start.call(e),
+            oncontextmenu: move |e| on_context_menu.call(e),
 
             if node.kind == "folder" {
                 FolderIconFilled { size: 40 }

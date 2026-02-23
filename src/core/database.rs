@@ -18,7 +18,7 @@ pub static DATABASE: LazyLock<DbPool> = LazyLock::new(|| {
     }
 
     let manager = SqliteConnectionManager::file(db_path)
-        .with_init(|c| c.execute_batch("PRAGMA journal_mode=WAL;"));
+        .with_init(|c| c.execute_batch("PRAGMA journal_mode=WAL;PRAGMA synchronous=NORMAL;"));
 
     Pool::new(manager).expect("Failed to create pool")
 });

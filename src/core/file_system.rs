@@ -162,4 +162,56 @@ impl FileSystem {
 
         Ok(())
     }
+
+    pub fn delete_node(&self, id: &str) -> Result<(), String> {
+        let mut to_delete = vec![id.to_string()];
+        let mut i = 0;
+
+        while i < to_delete.len() {
+            let current = to_delete[i].clone();
+            if let Some(node) = self.nodes.get(&current) {
+                for child in &node.children {
+                    to_delete.push(child.clone());
+                }
+            }
+            i += 1;
+        }
+
+        let connection = DATABASE.get().unwrap();
+
+        if let Some(node) = self.nodes.get(id) {
+            if let Some(parent_id) = &node.parent_id {
+                if let Some(mut parent) = self.nodes.get_mut(parent_id) {
+                    parent.children.retain(|c| c != id);
+                }
+            }
+        }
+
+        for node_id in &to_delete {
+            connection
+                .execute("DELETE FROM file_system WHERE id = ?1", params![node_id])
+                .map_err(|e| format!("Database error: {}", e))?;
+
+            self.nodes.remove(node_id);
+        }
+
+        Ok(())
+    }
+
+    pub fn rename_node(&self, id: &str, new_name: &str) -> Result<(), String> {
+        let connection = DATABASE.get().unwrap();
+
+        connection
+            .execute(
+                "UPDATE file_system SET name = ?1 WHERE id = ?2",
+                params![new_name, id],
+            )
+            .map_err(|e| format!("Database error: {}", e))?;
+
+        if let Some(mut node) = self.nodes.get_mut(id) {
+            node.name = new_name.to_string();
+        }
+
+        Ok(())
+    }
 }

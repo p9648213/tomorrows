@@ -2,10 +2,7 @@ use crate::core::{constant::DESKTOP_ID, entity::FileNode};
 use dioxus::prelude::*;
 
 #[cfg(feature = "server")]
-use {
-    crate::core::file_system::FileSystem,
-    dioxus::server::axum::Extension,
-};
+use {crate::core::file_system::FileSystem, dioxus::server::axum::Extension};
 
 #[server]
 pub async fn get_desktop_files() -> Result<Vec<FileNode>, ServerFnError> {
@@ -24,6 +21,22 @@ pub async fn move_file(id: String, x: i32, y: i32) -> Result<(), ServerFnError> 
 #[server]
 pub async fn create_new_folder(name: String, x: i32, y: i32) -> Result<FileNode, ServerFnError> {
     let mut fs: Extension<FileSystem> = FullstackContext::extract().await?;
-    let node = fs.create_folder(DESKTOP_ID, &name, x, y).map_err(ServerFnError::new)?;
+    let node = fs
+        .create_folder(DESKTOP_ID, &name, x, y)
+        .map_err(ServerFnError::new)?;
     Ok(node)
+}
+
+#[server]
+pub async fn delete_node(id: String) -> Result<(), ServerFnError> {
+    let fs: Extension<FileSystem> = FullstackContext::extract().await?;
+    fs.delete_node(&id).map_err(ServerFnError::new)?;
+    Ok(())
+}
+
+#[server]
+pub async fn rename_node(id: String, new_name: String) -> Result<(), ServerFnError> {
+    let fs: Extension<FileSystem> = FullstackContext::extract().await?;
+    fs.rename_node(&id, &new_name).map_err(ServerFnError::new)?;
+    Ok(())
 }
